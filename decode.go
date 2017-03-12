@@ -1,29 +1,11 @@
-package main
+package bencode
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"strconv"
 )
-
-/*
-
-func readUntil
-
-func decodeString
-
-func decodeInt
-
-func decodeList
-
-func decodeDictionary
-
-func decode
-
-*/
 
 type message struct {
 	bufio.Reader
@@ -41,6 +23,37 @@ func (m *message) readUntil(until byte) (interface{}, error) {
 	return resultStr, nil
 }
 
+// selects the appropriate decode function based on the
+// first byte of the message
+func (m *message) chooseDecodeFunc(first []byte) (interface{}, error) {
+	switch string(first) {
+	case "i":
+		m.ReadByte()
+		return m.decodeInt()
+	case "d":
+		m.ReadByte()
+		return m.decodeDict()
+	case "e":
+		return nil, errors.New("Invalid character e. This should be handled by calling function")
+	default:
+		return m.decodeString()
+	}
+}
+
+// checks if the first byte is as expected
+func (m *message) checkByte(expected byte) bool {
+	firstByte, err := m.ReadByte()
+	if err != nil {
+		return false
+	}
+
+	if firstByte != expected {
+		return false
+	}
+
+	return true
+}
+
 // decode message as a string
 func (m *message) decodeString() (interface{}, error) {
 	res, err := m.readUntil(':')
@@ -55,18 +68,20 @@ func (m *message) decodeString() (interface{}, error) {
 		return nil, errors.New("Error during decodeString. Incorrect Format")
 	}
 
-	strLen, err := strconv.Atoi(data)
+	// get length of the string
+	strLen, err := strconv.ParseInt(data, 10, 64)
 	if err != nil {
 		return nil, err
 	}
 
-	str := make([]byte, strLen)
-	_, err = io.ReadFull(m, str)
+	// read the string from the buffer
+	byteStr := make([]byte, strLen)
+	_, err = io.ReadFull(m, byteStr)
 	if err != nil {
 		return nil, err
 	}
 
-	return string(str), nil
+	return string(byteStr), nil
 }
 
 // decode message as int
@@ -76,126 +91,105 @@ func (m *message) decodeInt() (interface{}, error) {
 		return nil, err
 	}
 
-	var str string
+	var data string
 	var ok bool
 
-	if str, ok = res.(string); !ok {
+	if data, ok = res.(string); !ok {
 		return nil, errors.New("Error during decodeInt. Incorrect format")
 	}
 
-	return str[1:], nil
+	// get length of the string
+	num, err := strconv.ParseInt(data, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	return num, nil
 }
 
 // decode message as list
 func (m *message) decodeList() (interface{}, error) {
+	checkFirst := m.checkByte('l')
+	if !checkFirst {
+		return nil, errors.New("Error during decodeList")
+	}
+
 	var list []interface{}
 
-	firstByte, err := m.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-
-	if firstByte != 'l' {
-		return nil, errors.New("Error decoding list. First character is not l")
-	}
-
 	for {
 		nextByte, err := m.Peek(1)
 		if err != nil {
 			return "", nil
 		}
 
-		switch string(nextByte) {
-		case "e":
+		if string(nextByte) == "e" {
 			m.ReadByte()
-			return list, nil
-		case "i":
-			res, _ := m.decodeInt()
-			list = append(list, res)
-			fmt.Println("Decode int 2", res)
-		default:
-			res, _ := m.decodeString()
-			list = append(list, res)
-			fmt.Println("Decode String 2", res)
-		}
-	}
-}
-
-func (m *message) decodeDict() (interface{}, error) {
-	dict := make(map[interface{}]interface{})
-	var key interface{}
-
-	firstByte, err := m.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-
-	if firstByte != 'd' {
-		return nil, errors.New("Error decoding dictionary. First character is not d")
-	}
-
-	key = nil
-
-	for {
-		fmt.Println("Key = ", key)
-
-		nextByte, err := m.Peek(1)
-		if err != nil {
-			return "", nil
-		}
-
-		switch string(nextByte) {
-		case "e":
-			m.ReadByte()
-			return dict, nil
-		case "l":
-			res, _ := m.decodeList()
-			dict[key] = res
-		case "i":
-			res, _ := m.decodeInt()
-			dict[key] = res
-		default:
-			res, _ := m.decodeString()
-			fmt.Println("res", res)
-			if key == nil {
-				key = res
-			} else {
-				dict[key] = res
-				key = nil
+			break
+		} else {
+			res, err := m.chooseDecodeFunc(nextByte)
+			if err != nil {
+				return nil, err
 			}
+
+			list = append(list, res)
 		}
 	}
+	return list, nil
 }
 
+// decode the message as a dictionary.
+func (m *message) decodeDict() (interface{}, error) {
+	checkFirst := m.checkByte('d')
+	if !checkFirst {
+		return nil, errors.New("Error during decodeDict")
+	}
+
+	dict := make(map[string]interface{})
+
+	for {
+		nextByte, err := m.Peek(1)
+		if err != nil {
+			return "", nil
+		}
+
+		if string(nextByte) == "e" {
+			m.ReadByte()
+			break
+		} else {
+			res, err := m.chooseDecodeFunc(nextByte)
+			if err != nil {
+				return nil, err
+			}
+
+			var key string
+			var ok bool
+
+			if key, ok = res.(string); !ok {
+				return nil, errors.New("Dictionary key is not a valid string")
+			}
+
+			val, err := m.chooseDecodeFunc(nextByte)
+			if err != nil {
+				return nil, err
+			}
+			dict[key] = val
+		}
+	}
+
+	return dict, nil
+}
+
+// decode bencoded string
 func decode(reader io.Reader) (interface{}, error) {
 	m := message{*bufio.NewReader(reader)}
-
-	for {
-		firstByte, err := m.Peek(1)
-		if err != nil {
-			return "", nil
-		}
-
-		switch string(firstByte) {
-		case "i":
-			res, _ := m.decodeInt()
-			fmt.Println("Decode int", res)
-		case "d":
-			res, _ := m.decodeDict()
-			fmt.Println("Decode dict", res)
-		case "l":
-			res, _ := m.decodeList()
-			fmt.Println("Decode list", res)
-		default:
-			res, _ := m.decodeString()
-			fmt.Println("Decode String", res)
-		}
+	firstByte, err := m.Peek(1)
+	if err != nil {
+		return "", err
 	}
-}
 
-func main() {
-	str := "d3:cow3:moo4:spam4:eggse"
-	buf := bytes.NewBufferString(str)
+	if string(firstByte) != "d" {
+		return nil, errors.New("Bencoded string doesn't start with d")
+	}
 
-	decode(buf)
+	return m.decodeDict()
 }
