@@ -7,13 +7,13 @@ import (
 	"strconv"
 )
 
-type message struct {
+type decoder struct {
 	bufio.Reader
 }
 
 // read message until the specified byte
 // returns the message as a string
-func (m *message) readUntil(until byte) (interface{}, error) {
+func (m *decoder) readUntil(until byte) (interface{}, error) {
 	res, err := m.ReadSlice(until)
 	if err != nil {
 		return nil, err
@@ -25,7 +25,7 @@ func (m *message) readUntil(until byte) (interface{}, error) {
 
 // selects the appropriate decode function based on the
 // first byte of the message
-func (m *message) chooseDecodeFunc(first []byte) (interface{}, error) {
+func (m *decoder) chooseDecodeFunc(first []byte) (interface{}, error) {
 	switch string(first) {
 	case "i":
 		m.ReadByte()
@@ -41,7 +41,7 @@ func (m *message) chooseDecodeFunc(first []byte) (interface{}, error) {
 }
 
 // checks if the first byte is as expected
-func (m *message) checkByte(expected byte) bool {
+func (m *decoder) checkByte(expected byte) bool {
 	firstByte, err := m.ReadByte()
 	if err != nil {
 		return false
@@ -55,7 +55,8 @@ func (m *message) checkByte(expected byte) bool {
 }
 
 // decode message as a string
-func (m *message) decodeString() (interface{}, error) {
+// returns the string as a byte array
+func (m *decoder) decodeString() (interface{}, error) {
 	res, err := m.readUntil(':')
 	if err != nil {
 		return nil, err
@@ -81,11 +82,11 @@ func (m *message) decodeString() (interface{}, error) {
 		return nil, err
 	}
 
-	return string(byteStr), nil
+	return byteStr, nil
 }
 
 // decode message as int
-func (m *message) decodeInt() (interface{}, error) {
+func (m *decoder) decodeInt() (interface{}, error) {
 	res, err := m.readUntil('e')
 	if err != nil {
 		return nil, err
@@ -108,7 +109,7 @@ func (m *message) decodeInt() (interface{}, error) {
 }
 
 // decode message as list
-func (m *message) decodeList() (interface{}, error) {
+func (m *decoder) decodeList() (interface{}, error) {
 	checkFirst := m.checkByte('l')
 	if !checkFirst {
 		return nil, errors.New("Error during decodeList")
@@ -138,7 +139,8 @@ func (m *message) decodeList() (interface{}, error) {
 }
 
 // decode the message as a dictionary.
-func (m *message) decodeDict() (interface{}, error) {
+// the key of the dictionary is a string
+func (m *decoder) decodeDict() (interface{}, error) {
 	checkFirst := m.checkByte('d')
 	if !checkFirst {
 		return nil, errors.New("Error during decodeDict")
@@ -161,13 +163,14 @@ func (m *message) decodeDict() (interface{}, error) {
 				return nil, err
 			}
 
-			var key string
+			var byteKey []byte
 			var ok bool
 
-			if key, ok = res.(string); !ok {
+			if byteKey, ok = res.([]byte); !ok {
 				return nil, errors.New("Dictionary key is not a valid string")
 			}
 
+			key := string(byteKey)
 			val, err := m.chooseDecodeFunc(nextByte)
 			if err != nil {
 				return nil, err
@@ -181,7 +184,7 @@ func (m *message) decodeDict() (interface{}, error) {
 
 // decode bencoded string
 func decode(reader io.Reader) (interface{}, error) {
-	m := message{*bufio.NewReader(reader)}
+	m := decoder{*bufio.NewReader(reader)}
 	firstByte, err := m.Peek(1)
 	if err != nil {
 		return "", err
